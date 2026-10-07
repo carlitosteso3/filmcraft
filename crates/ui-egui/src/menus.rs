@@ -376,7 +376,49 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
     if let Err(e) = &r {
         app.ui.status = e.clone();
     }
+    // The desktop shell only delivers Cmd+V while the system clipboard holds text (see
+    // `clipboard_keys`): copied clips leave a line there so the next Paste reaches `edit.paste`.
+    if let Ok(v) = &r
+        && matches!(id, "edit.copy" | "edit.cut")
+    {
+        let n = v.get("copied").and_then(Value::as_u64).unwrap_or(app.session.state.clipboard.len() as u64);
+        if n > 0 {
+            ctx.copy_text(format!("FilmCraft: {n} clip{}", if n == 1 { "" } else { "s" }));
+        }
+    }
     r
+}
+
+/// egui-winit turns the clipboard shortcuts into `Copy` / `Cut` / `Paste` events and drops the key
+/// press, so `Cmd+C`, `Cmd+X`, `Cmd+V` (and on Windows `Shift+Delete`, `Ctrl+Insert`,
+/// `Shift+Insert`) never reached the shortcut table (#188). Add the key press back next to each
+/// event: text fields still get the event, and with no text field focused the shortcut fires.
+/// The modifiers come from the last frame: they were held down before the key.
+pub fn clipboard_keys(ctx: &egui::Context, raw: &mut egui::RawInput) {
+    let m = ctx.input(|i| i.modifiers);
+    // Shift without Cmd is Windows' Shift+Delete / Shift+Insert; anything else (Ctrl+Insert, or
+    // Cmd pressed in the same frame as the key, not yet in `m`) is the Cmd shortcut.
+    let shifted = m.shift && !m.command;
+    let cmd = egui::Modifiers { command: true, ctrl: !cfg!(target_os = "macos"), mac_cmd: cfg!(target_os = "macos"), ..m };
+    let keys: Vec<(egui::Key, egui::Modifiers)> = raw
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            egui::Event::Copy => Some((egui::Key::C, cmd)),
+            egui::Event::Cut if shifted => Some((egui::Key::Delete, m)),
+            egui::Event::Cut => Some((egui::Key::X, cmd)),
+            egui::Event::Paste(_) if shifted => Some((egui::Key::Insert, m)),
+            egui::Event::Paste(_) => Some((egui::Key::V, cmd)),
+            _ => None,
+        })
+        .collect();
+    for (key, modifiers) in keys {
+        if raw.events.iter().any(|e| matches!(e, egui::Event::Key { key: k, pressed: true, .. } if *k == key)) {
+            continue; // the platform delivered the key too
+        }
+        raw.events.push(egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers });
+        raw.events.push(egui::Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers });
+    }
 }
 
 /// A menu tree entry for display / `ui.menu.list`.

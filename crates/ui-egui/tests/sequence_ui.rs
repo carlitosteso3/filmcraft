@@ -223,3 +223,25 @@ fn later_clips_keep_the_zoom_once_the_sequence_has_content() {
     let (x_in, x_out) = clip_span(&mut d, clip);
     assert!(((x_out - x_in) - (secs * 300.0 - 4.0)).abs() < 2.0, "zoom changed: {} px for {secs} s at 300 px/s", x_out - x_in);
 }
+
+/// #188: the desktop shell delivers Cmd+C / Cmd+V as `Copy` / `Paste` events with no key press;
+/// they still copy the selected Graphic clip and paste it at the playhead.
+#[test]
+fn copy_paste_events_duplicate_a_graphic_clip() {
+    let mut d = Driver::demo();
+    d.exec("playhead.set", json!({"seconds": 28}));
+    let c = d.exec("graphics.newText", json!({"text": "Lyric", "seconds": 2}))["clip"].as_u64().unwrap();
+    d.exec("timeline.select", json!({"clips": [c]}));
+    d.click(&format!("timeline.clip.{c}"));
+    d.harness.input_mut().events.push(egui::Event::Copy);
+    d.frames(2);
+    assert_eq!(d.harness.state().session.state.clipboard.len(), 1, "Copy copied the clip");
+    d.exec("playhead.set", json!({"seconds": 20}));
+    d.harness.input_mut().events.push(egui::Event::Paste("FilmCraft: 1 clip".into()));
+    d.frames(2);
+    let q = d.harness.state().session.active_sequence().unwrap().clone();
+    let item = q.find_item(filmcraft_project::ClipId(c)).unwrap().1.item;
+    let copies: Vec<_> = q.all_tracks().flat_map(|t| t.items.iter()).filter(|i| i.item == item && i.id.0 != c).collect();
+    assert_eq!(copies.len(), 1, "Paste placed one copy");
+    assert!((copies[0].start.seconds() - 20.0).abs() < 0.05, "at the playhead: {:?}", copies[0].start);
+}
