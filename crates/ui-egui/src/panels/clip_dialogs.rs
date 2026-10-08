@@ -26,6 +26,8 @@
 //! - Field Options `fieldOptions.*`: `reverseFieldDominance`, `processing.<none|alwaysDeinterlace|flickerRemoval>`;
 //! - Clip Speed / Duration `speedDuration.*`: `speed`, `reverse`, `ripple`,
 //!   `interpolation.<frameSampling|frameBlending|opticalFlow>`;
+//! - Sequence Settings `sequenceSettings.*`: `name`, `width`, `height`, `fps.<rate>` (e.g.
+//!   `fps.23.976`), `sampleRate.<hz>`, `mix.<mono|stereo|5.1|adaptive>`;
 //! - Close Project `closeProject.save`, `closeProject.dontSave`, `closeProject.cancel`.
 
 use egui::{Align2, RichText};
@@ -55,6 +57,7 @@ fn meta(command: &str) -> Option<(&'static str, &'static str)> {
         "clip.frameHoldOptions" => ("Frame Hold Options", "frameHold"),
         "clip.fieldOptions" => ("Field Options", "fieldOptions"),
         "clip.speedDuration" => ("Clip Speed / Duration", "speedDuration"),
+        "sequence.settings" => ("Sequence Settings", "sequenceSettings"),
         "file.closeProject" => ("Save Project", "closeProject"),
         _ => return None,
     })
@@ -198,9 +201,26 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
                 json!({"duration": it.as_ref().map_or(0, |i| i.duration.0), "speed": speed.abs(), "fps": fps}),
             )
         }
+        "sequence.settings" => {
+            let name = s.state.active_sequence.and_then(|id| s.project.item(id)).map(|i| i.name.clone()).unwrap_or_default();
+            let st = s.active_sequence().map(|q| q.settings.clone()).unwrap_or_default();
+            (
+                json!({"name": name, "width": st.width, "height": st.height, "fps": fps_label(st.frame_rate), "sampleRate": st.sample_rate,
+                    "mix": format_name(st.audio_master)}),
+                Value::Null,
+            )
+        }
         _ => (json!({}), Value::Null),
     }
 }
+
+/// A frame rate as the dialog shows and sends it: `23.976`, `25`, `29.97`.
+fn fps_label(r: filmcraft_time::FrameRate) -> String {
+    let s = format!("{:.3}", r.as_f64());
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+const SAMPLE_RATES: [u32; 4] = [32_000, 44_100, 48_000, 96_000];
 
 fn format_name(f: AudioChannels) -> &'static str {
     match f {
@@ -505,6 +525,57 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     }
                 }
             }
+            "sequence.settings" => {
+                text(ui, &mut elems, pre, p, "name", "Sequence Name:", 220.0);
+                ui.label(RichText::new("Video").strong());
+                ui.horizontal(|ui| {
+                    ui.label("Frame Size:");
+                    for (k, suffix) in [("width", " horizontal"), ("height", " vertical")] {
+                        let mut v = p[k].as_f64().unwrap_or(0.0);
+                        let r = ui.add(egui::DragValue::new(&mut v).range(16.0..=16_384.0).suffix(suffix));
+                        push(&mut elems, format!("{pre}.{k}"), &r, k);
+                        if r.changed() {
+                            p[k] = json!(v.round() as u32);
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Timebase:");
+                    let cur = p["fps"].as_str().unwrap_or_default().to_string();
+                    egui::ComboBox::from_id_salt("sequenceSettings.fps").selected_text(format!("{cur} frames/second")).show_ui(ui, |ui| {
+                        for r in filmcraft_time::FrameRate::COMMON {
+                            let l = fps_label(r);
+                            let resp = ui.selectable_label(cur == l, format!("{l} frames/second"));
+                            push(&mut elems, format!("{pre}.fps.{l}"), &resp, l.as_str());
+                            if resp.clicked() {
+                                p["fps"] = json!(l);
+                            }
+                        }
+                    });
+                });
+                ui.label(RichText::new("Audio").strong());
+                ui.horizontal(|ui| {
+                    ui.label("Sample Rate:");
+                    for hz in SAMPLE_RATES {
+                        let l = format!("{hz} Hz");
+                        let r = ui.radio(p["sampleRate"].as_u64() == Some(hz as u64), &l);
+                        push(&mut elems, format!("{pre}.sampleRate.{hz}"), &r, l.as_str());
+                        if r.clicked() {
+                            p["sampleRate"] = json!(hz);
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Master:");
+                    for (k, l) in FORMATS {
+                        let r = ui.radio(p["mix"].as_str() == Some(k), l);
+                        push(&mut elems, format!("{pre}.mix.{k}"), &r, l);
+                        if r.clicked() {
+                            p["mix"] = json!(k);
+                        }
+                    }
+                });
+            }
             "file.closeProject" => {
                 ui.label(format!("Save changes to “{project_name}” before closing?"));
                 ui.add_space(8.0);
@@ -604,6 +675,17 @@ fn finish(d: &ClipDialogDraft) -> Value {
         // the timecode field only applies to Source Timecode / Sequence Time
         "clip.frameHoldOptions" if !matches!(p["holdOn"].as_str(), Some("sourceTimecode" | "sequenceTime")) => {
             p.as_object_mut().map(|m| m.remove("timecode"));
+        }
+        "sequence.settings" => {
+            // the timebase travels as a number; an empty name keeps the old one
+            let fps = p["fps"].as_str().and_then(|f| f.parse::<f64>().ok());
+            p["fps"] = fps.map_or(Value::Null, |f| json!(f));
+            if p["fps"].is_null() {
+                p.as_object_mut().map(|m| m.remove("fps"));
+            }
+            if p["name"].as_str().is_some_and(|n| n.trim().is_empty()) {
+                p.as_object_mut().map(|m| m.remove("name"));
+            }
         }
         _ => {}
     }

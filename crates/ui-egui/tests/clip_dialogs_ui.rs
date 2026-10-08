@@ -269,3 +269,44 @@ fn speed_duration_from_the_clip_menu_opens_the_dialog() {
     assert_eq!(got.speed, 2.0);
     assert_eq!(got.time_interpolation, filmcraft_project::TimeInterpolation::FrameBlending);
 }
+
+/// #172 / #198: Sequence ▸ Sequence Settings… opens a dialog showing the sequence's settings
+/// (it ran the command with nothing to change, so nothing seemed to happen); OK applies the
+/// edits, Cancel leaves the sequence alone.
+#[test]
+fn sequence_settings_opens_a_dialog() {
+    let mut d = Driver::new();
+    let before = d.app().session.active_sequence().unwrap().settings.clone();
+    let undo0 = d.app().session.history.undo.len();
+    d.menu("sequence.settings");
+    let dlg = d.app().ui.clip_dialog.clone().expect("the dialog opened");
+    assert_eq!(dlg.command, "sequence.settings");
+    assert_eq!(dlg.params["width"], json!(before.width));
+    assert_eq!(dlg.params["fps"], json!("23.976"));
+    d.click("sequenceSettings.cancel");
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert_eq!(d.app().session.history.undo.len(), undo0, "Cancel adds no undo step");
+
+    d.menu("sequence.settings");
+    if let Some(dlg) = d.app().ui.clip_dialog.as_mut() {
+        dlg.params["name"] = json!("Vertical Cut");
+        dlg.params["width"] = json!(1080);
+        dlg.params["height"] = json!(1920);
+    }
+    d.click("sequenceSettings.sampleRate.44100");
+    d.click("sequenceSettings.ok");
+    assert!(d.app().ui.clip_dialog.is_none(), "closed on OK");
+    let s = &d.app().session;
+    let q = s.active_sequence().unwrap();
+    assert_eq!((q.settings.width, q.settings.height, q.settings.sample_rate), (1080, 1920, 44_100));
+    assert_eq!(q.settings.frame_rate, before.frame_rate, "the timebase kept");
+    assert_eq!(s.project.item(s.state.active_sequence.unwrap()).unwrap().name, "Vertical Cut");
+
+    // the timebase travels as text in the dialog and as a number to the command
+    d.menu("sequence.settings");
+    if let Some(dlg) = d.app().ui.clip_dialog.as_mut() {
+        dlg.params["fps"] = json!("25");
+    }
+    d.click("sequenceSettings.ok");
+    assert_eq!(d.app().session.active_sequence().unwrap().settings.frame_rate, filmcraft_time::FrameRate::FPS_25);
+}
